@@ -48,11 +48,12 @@ var (
 	reserveSchema  bool
 	xmlPath        string
 	retryConnCount int
+	dbName         string
 )
 
 func init() {
 	flag.StringVar(&host, "host", "127.0.0.1", "The host of the TiDB/MySQL server.")
-	flag.StringVar(&port, "port", "4000", "The listen port of TiDB/MySQL server.")
+	flag.StringVar(&port, "port", "3306", "The listen port of TiDB/MySQL server.")
 	flag.StringVar(&user, "user", "root", "The user for connecting to the database.")
 	flag.StringVar(&passwd, "passwd", "", "The password for the user.")
 	flag.StringVar(&logLevel, "log-level", "error", "The log level of mysql-tester: info, warn, error, debug.")
@@ -62,10 +63,11 @@ func init() {
 	flag.BoolVar(&reserveSchema, "reserve-schema", false, "Reserve schema after each test")
 	flag.StringVar(&xmlPath, "xunitfile", "", "The xml file path to record testing results.")
 	flag.IntVar(&retryConnCount, "retry-connection-count", 120, "The max number to retry to connect to the database.")
+	flag.StringVar(&dbName, "dbName", "mysql", "The database name that firstly connect to.")
 
 	c := &charset.Charset{
-		Name:             "gbk",
-		DefaultCollation: "gbk_bin",
+		Name:             "utf8mb4",
+		DefaultCollation: "utf8mb4_general_ci",
 		Collations:       map[string]*charset.Collation{},
 	}
 	charset.AddCharset(c)
@@ -155,33 +157,6 @@ func newTester(name string) *tester {
 	return t
 }
 
-func setSessionVariable(db *sql.DB) {
-	if _, err := db.Exec("SET @@tidb_hash_join_concurrency=1"); err != nil {
-		log.Fatalf("Executing \"SET @@tidb_hash_join_concurrency=1\" err[%v]", err)
-	}
-	if _, err := db.Exec("SET @@tidb_enable_pseudo_for_outdated_stats=false"); err != nil {
-		log.Fatalf("Executing \"SET @@tidb_enable_pseudo_for_outdated_stats=false\" err[%v]", err)
-	}
-	// enable tidb_enable_analyze_snapshot in order to let analyze request with SI isolation level to get accurate response
-	if _, err := db.Exec("SET @@tidb_enable_analyze_snapshot=1"); err != nil {
-		log.Warnf("Executing \"SET @@tidb_enable_analyze_snapshot=1 failed\" err[%v]", err)
-	} else {
-		log.Info("enable tidb_enable_analyze_snapshot")
-	}
-	if _, err := db.Exec("SET @@tidb_enable_clustered_index='int_only'"); err != nil {
-		log.Fatalf("Executing \"SET @@tidb_enable_clustered_index='int_only'\" err[%v]", err)
-	}
-}
-
-// isTiDB returns true if the DB is confirmed to be TiDB
-func isTiDB(db *sql.DB) bool {
-	if _, err := db.Exec("SELECT tidb_version()"); err != nil {
-		log.Infof("This doesn't look like a TiDB server, err[%v]", err)
-		return false
-	}
-	return true
-}
-
 func (t *tester) addConnection(connName, hostName, userName, password, db string) {
 	var (
 		mdb *sql.DB
@@ -198,15 +173,6 @@ func (t *tester) addConnection(connName, hostName, userName, password, db string
 		}
 		t.expectedErrs = nil
 		return
-	}
-	if isTiDB(mdb) {
-		if _, err = mdb.Exec("SET @@tidb_init_chunk_size=1"); err != nil {
-			log.Fatalf("Executing \"SET @@tidb_init_chunk_size=1\" err[%v]", err)
-		}
-		if _, err = mdb.Exec("SET @@tidb_max_chunk_size=32"); err != nil {
-			log.Fatalf("Executing \"SET @@tidb_max_chunk_size=32\" err[%v]", err)
-		}
-		setSessionVariable(mdb)
 	}
 	t.conn[connName] = &Conn{mdb: mdb, tx: nil}
 	t.switchConnection(connName)
@@ -241,7 +207,6 @@ func (t *tester) disconnect(connName string) {
 }
 
 func (t *tester) preProcess() {
-	dbName := "test"
 	mdb, err := OpenDBWithRetry("mysql", user+":"+passwd+"@tcp("+host+":"+port+")/"+dbName+"?allowAllFiles=true"+params, retryConnCount)
 	t.conn = make(map[string]*Conn)
 	if err != nil {
@@ -256,15 +221,6 @@ func (t *tester) preProcess() {
 
 	if _, err = mdb.Exec(fmt.Sprintf("use `%s`", t.name)); err != nil {
 		log.Fatalf("Executing Use test err[%v]", err)
-	}
-	if isTiDB(mdb) {
-		if _, err = mdb.Exec("SET @@tidb_init_chunk_size=1"); err != nil {
-			log.Fatalf("Executing \"SET @@tidb_init_chunk_size=1\" err[%v]", err)
-		}
-		if _, err = mdb.Exec("SET @@tidb_max_chunk_size=32"); err != nil {
-			log.Fatalf("Executing \"SET @@tidb_max_chunk_size=32\" err[%v]", err)
-		}
-		setSessionVariable(mdb)
 	}
 	t.mdb = mdb
 	t.conn[default_connection] = &Conn{mdb: mdb, tx: nil}
@@ -487,15 +443,6 @@ func (t *tester) concurrentExecute(querys []query, wg *sync.WaitGroup, errOccure
 	}
 	if _, err = mdb.Exec(fmt.Sprintf("use `%s`", t.name)); err != nil {
 		log.Fatalf("Executing Use test err[%v]", err)
-	}
-	if isTiDB(mdb) {
-		if _, err = mdb.Exec("SET @@tidb_init_chunk_size=1"); err != nil {
-			log.Fatalf("Executing \"SET @@tidb_init_chunk_size=1\" err[%v]", err)
-		}
-		if _, err = mdb.Exec("SET @@tidb_max_chunk_size=32"); err != nil {
-			log.Fatalf("Executing \"SET @@tidb_max_chunk_size=32\" err[%v]", err)
-		}
-		setSessionVariable(mdb)
 	}
 	tt.mdb = mdb
 	defer tt.mdb.Close()
